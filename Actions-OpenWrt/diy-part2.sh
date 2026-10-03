@@ -18,18 +18,22 @@
 
 # Modify hostname
 #sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
-# 集成中兴 F50 / USB 随身 Wi-Fi 自动创建 usb0 WAN 接口配置
+# 集成中兴 F50 / USB 随身 Wi-Fi 自动创建 eth2 / usb0 WAN 接口
 mkdir -p package/base-files/files/etc/hotplug.d/net
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-usb-wan
 #!/bin/sh
-[ "$ACTION" = "add" ] && [ "$INTERFACE" = "usb0" ] && {
-    uci -q get network.usbwan >/dev/null || {
-        uci set network.usbwan=interface
-        uci set network.usbwan.proto='dhcp'
-        uci set network.usbwan.device='usb0'
-        uci commit network
-        /etc/init.d/network reload
-    }
-}
+if [ "$ACTION" = "add" ]; then
+    case "$INTERFACE" in
+        eth2|usb0)
+            uci -q get network.usbwan >/dev/null || {
+                uci set network.usbwan=interface
+                uci set network.usbwan.proto='dhcp'
+                uci set network.usbwan.device="$INTERFACE"
+                uci commit network
+                /etc/init.d/network reload
+            }
+            ;;
+    esac
+fi
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-usb-wan
