@@ -11,7 +11,7 @@ define Device/cudy_tr3000-512mb-v1
 	IMAGE_SIZE := 520000k
 	KERNEL_IN_UBI := 1
 	IMAGES += sysupgrade.bin
-	IMAGE/sysupgrade.bin := sysupgrade-ubi | append-metadata
+	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 	DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
 TARGET_DEVICES += cudy_tr3000-512mb-v1
