@@ -65,14 +65,6 @@ jobs:
         mkdir -p target/linux/mediatek/dts
         cp -v $GITHUB_WORKSPACE/openwrt-mod/mt7981*.dts target/linux/mediatek/dts/
 
-    # - name: Cache ccache
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: .ccache
-    #     key: openwrt-ccache-${{ runner.os }}
-    #     restore-keys: |
-    #       openwrt-ccache-${{ runner.os }}
-    
     - name: Load custom feeds
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
@@ -112,18 +104,21 @@ jobs:
         echo "🔨 Starting compilation with $(nproc) threads"
         echo "CCACHE_DIR: $CCACHE_DIR"
 
-        # 首先尝试多线程编译
-        if make -j$(nproc) -k CC="ccache gcc" CXX="ccache g++"; then
+        # 首先尝试多线程编译（去掉 -k，一旦报错立刻停下）
+        if make -j$(nproc) CC="ccache gcc" CXX="ccache g++"; then
           echo "✅ Multi-threaded compilation succeeded"
           echo "status=success" >> $GITHUB_OUTPUT
         else
-          echo "⚠️ Multi-threaded compilation failed, retrying with single thread and verbose output..."
-          make -j1 -k V=s
-          if [ $? -eq 0 ]; then
+          echo "⚠️ 多线程编译失败，正在使用单线程复现并抓取真实错误日志..."
+          # 单线程详细输出并保存日志
+          make -j1 V=s 2>&1 | tee build_error.log
+          if [ ${PIPESTATUS[0]} -eq 0 ]; then
             echo "✅ Single-threaded compilation succeeded"
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "❌ Compilation failed"
+            echo "==================== 错误定位（最后 60 行） ===================="
+            tail -n 60 build_error.log
             echo "status=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
@@ -151,10 +146,9 @@ jobs:
 
     - name: Organize files
       id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         cd openwrt/bin/targets/*/*
-        # rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -167,7 +161,7 @@ jobs:
 
     - name: Generate release tag and notes
       id: release
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
         set -e
         cd openwrt/bin/targets/*/*
@@ -198,9 +192,6 @@ jobs:
         echo "## ImmortalWrt(mod by 237) for Cudy TR3000(512MB)" > ${{ github.workspace }}/release.txt
         echo "- Branch: ${REPO_BRANCH}" >> ${{ github.workspace }}/release.txt
         echo "- Build time: ${BUILD_TIME}" >> ${{ github.workspace }}/release.txt
-        # echo "" >> ${{ github.workspace }}/release.txt
-        # echo "### SHA256" >> ${{ github.workspace }}/release.txt
-        # cat sha256sums.txt >> ${{ github.workspace }}/release.txt
 
         # 检查是否需要上传 kmod 包
         if [ "${UPLOAD_KMOD}" = "true" ]; then
