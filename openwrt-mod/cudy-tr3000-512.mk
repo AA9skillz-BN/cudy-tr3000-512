@@ -12,6 +12,6 @@ define Device/cudy_tr3000-512mb-v1
 	KERNEL_IN_UBI := 1
 	IMAGES += sysupgrade.bin
 	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-	DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
+	DEVICE_PACKAGES := kmod-usb3 kmod-usb-net kmod-usb-net-rndis kmod-usb-net-cdc-ether kmod-usb-net-cdc-ncm kmod-usb-net-huawei-cdc-ncm usb-modeswitch kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware automount
 endef
 TARGET_DEVICES += cudy_tr3000-512mb-v1
