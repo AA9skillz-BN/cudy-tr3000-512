@@ -8,7 +8,7 @@ on:
 
 env:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 6G
+  CCACHE_MAXSIZE: 5G
   USE_CCACHE: 1
   REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
   REPO_BRANCH: openwrt-24.10-6.6
@@ -43,21 +43,28 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
-        echo "💾 Disk space after cleanup:"
-        df -hT
+        echo "💾 磁盘空间清理完成"
 
     - name: Clone source code
       working-directory: /workdir
       run: |
-        df -hT $PWD
         git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Restore Ccache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: openwrt-ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles('openwrt-mod/config/kmod.config') }}
+        restore-keys: |
+          openwrt-ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}-
+          openwrt-ccache-${{ runner.os }}-
 
     - name: Append custom device definition
       run: |
         cd openwrt/target/linux/mediatek/image
         cat $GITHUB_WORKSPACE/openwrt-mod/cudy-tr3000-512.mk >> filogic.mk
-        echo "✅ Custom device definition appended to filogic.mk"
+        echo "✅ 设备定义已追加"
 
     - name: Copy custom DTS file
       run: |
@@ -93,7 +100,8 @@ jobs:
       run: |
         cd openwrt
         make defconfig
-        make download -j8
+        # 提高并发下载速度，提前拉取所有源码包，避免编译时卡在网络 I/O
+        make download -j16
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -101,34 +109,36 @@ jobs:
       id: compile
       run: |
         cd openwrt
-        echo "🔨 Starting compilation with $(nproc) threads"
-        echo "CCACHE_DIR: $CCACHE_DIR"
+        mkdir -p $CCACHE_DIR
+        ccache -M $CCACHE_MAXSIZE
+        ccache -z # 重置统计计数器，方便查看本轮命中率
 
-        # 首先尝试多线程编译（去掉 -k，一旦报错立刻停下）
-        if make -j$(nproc) CC="ccache gcc" CXX="ccache g++"; then
-          echo "✅ Multi-threaded compilation succeeded"
+        THREAD_NUM=$(( $(nproc) + 1 ))
+        echo "🔨 启动加速编译，并发线程数: $THREAD_NUM"
+
+        # 压榨核心编译，配合 ccache 加速
+        if make -j$THREAD_NUM CC="ccache gcc" CXX="ccache g++"; then
+          echo "✅ 编译成功完成"
           echo "status=success" >> $GITHUB_OUTPUT
         else
-          echo "⚠️ 多线程编译失败，正在使用单线程复现并抓取真实错误日志..."
-          # 单线程详细输出并保存日志
+          echo "⚠️ 并发编译异常，尝试抓取具体错误日志..."
           make -j1 V=s 2>&1 | tee build_error.log
           if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            echo "✅ Single-threaded compilation succeeded"
+            echo "✅ 编译成功完成"
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "❌ Compilation failed"
-            echo "==================== 错误定位（最后 60 行） ===================="
+            echo "❌ 编译失败"
+            echo "==================== 错误定位 ===================="
             tail -n 60 build_error.log
             echo "status=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
         fi
 
-        # 显示 ccache 统计
-        echo "📊 ccache statistics:"
+        echo "📊 本次编译 Ccache 命中统计:"
         ccache -s
 
-        # 获取设备名称
+        # 获取设备名称与时间戳
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
@@ -136,13 +146,6 @@ jobs:
     - name: Check space usage
       if: (!cancelled())
       run: df -hT
-
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: ImmortalWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
 
     - name: Organize files
       id: organize
@@ -152,13 +155,6 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: ImmortalWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
-
     - name: Generate release tag and notes
       id: release
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
@@ -166,46 +162,23 @@ jobs:
         set -e
         cd openwrt/bin/targets/*/*
 
-        # 生成基础信息
         BUILD_TIME=$(date +"%Y%m%d%H%M")
         RELEASE_NAME="immortalwrt(mod by 237)-${REPO_BRANCH}-${BUILD_TIME}"
         echo "release_tag=$RELEASE_NAME" >> $GITHUB_OUTPUT
 
-        echo "🧱 Release name: $RELEASE_NAME"
-        echo "📦 Collecting firmware files..."
-
-        # 筛选固件文件
+        echo "🧱 固件命名: $RELEASE_NAME"
         FIRMWARE_FILES=$(ls *squashfs-sysupgrade.bin *initramfs-kernel.bin 2>/dev/null || true)
         if [ -z "$FIRMWARE_FILES" ]; then
-          echo "❌ 未找到匹配的固件文件 (*.bin)"
+          echo "❌ 未找到匹配的固件文件"
           exit 1
         fi
 
-        # 计算 sha256 校验
-        echo "🔍 Generating SHA256 checksums..."
         sha256sum $FIRMWARE_FILES > sha256sums.txt
 
-        echo "✅ 固件列表:"
-        cat sha256sums.txt
-
-        # 生成 release note
         echo "## ImmortalWrt(mod by 237) for Cudy TR3000(512MB)" > ${{ github.workspace }}/release.txt
         echo "- Branch: ${REPO_BRANCH}" >> ${{ github.workspace }}/release.txt
         echo "- Build time: ${BUILD_TIME}" >> ${{ github.workspace }}/release.txt
 
-        # 检查是否需要上传 kmod 包
-        if [ "${UPLOAD_KMOD}" = "true" ]; then
-          echo "" >> ${{ github.workspace }}/release.txt
-          echo "🧩 正在打包 kernel modules..."
-          if [ -d packages ]; then
-            tar -czf kmod.tar.gz packages
-            echo "✅ 已生成 kmod.tar.gz"
-          else
-            echo "⚠️ 未找到 packages 目录，跳过 kmod 打包"
-          fi
-        fi
-
-        # 将路径信息传递出去
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -221,4 +194,3 @@ jobs:
         files: |
           ${{ env.FIRMWARE_PATH }}/*squashfs-sysupgrade.bin
           ${{ env.FIRMWARE_PATH }}/*initramfs-kernel.bin
-          ${{ env.FIRMWARE_PATH }}/kmod.tar.gz
