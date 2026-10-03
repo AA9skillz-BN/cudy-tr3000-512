@@ -163,7 +163,7 @@ jobs:
         cd openwrt/bin/targets/*/*
 
         BUILD_TIME=$(date +"%Y%m%d%H%M")
-        RELEASE_NAME="immortalwrt(mod by 237)-${REPO_BRANCH}-${BUILD_TIME}"
+        RELEASE_NAME="immortalwrt-237mod-${REPO_BRANCH}-${BUILD_TIME}"
         echo "release_tag=$RELEASE_NAME" >> $GITHUB_OUTPUT
 
         echo "🧱 固件命名: $RELEASE_NAME"
