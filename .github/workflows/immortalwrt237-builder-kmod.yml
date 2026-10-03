@@ -19,7 +19,7 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
-  UPLOAD_KMOD: true
+  UPLOAD_KMOD: false
   TZ: Asia/Shanghai
 
 jobs:
